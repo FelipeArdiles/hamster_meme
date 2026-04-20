@@ -109,7 +109,11 @@ SHOW_TRIGGER_WINDOW = False
 HAND_TIP_IDS = [4, 8, 12, 16, 20]
 HAND_PIP_IDS = [3, 6, 10, 14, 18]
 HAND_WRIST_ID = 0
+THUMB_MCP_ID = 2
+MIDDLE_MCP_ID = 9
 HEART_DISTANCE_THRESHOLD = 0.11
+FOLDED_FINGER_MARGIN_RATIO = 0.18
+THUMB_VERTICAL_RATIO = 1.25
 
 
 def bgra_from_black_key(bgr_or_bgra: np.ndarray, black_threshold: int = 45) -> np.ndarray:
@@ -185,33 +189,53 @@ def classify_hand_gesture(hand_landmarks: list, is_right_like: bool) -> str:
         return "unknown"
     fingers_up = []
 
+    wrist = pts[HAND_WRIST_ID]
+    middle_mcp = pts[MIDDLE_MCP_ID]
+    palm_scale = max(float(np.hypot(middle_mcp.x - wrist.x, middle_mcp.y - wrist.y)), 1e-6)
+    fold_margin = FOLDED_FINGER_MARGIN_RATIO * palm_scale
+
     # Pulgar: usa X considerando si es mano derecha/izquierda aproximada.
     thumb_tip = pts[HAND_TIP_IDS[0]]
     thumb_pip = pts[HAND_PIP_IDS[0]]
+    thumb_mcp = pts[THUMB_MCP_ID]
     thumb_extended = thumb_tip.x > thumb_pip.x if is_right_like else thumb_tip.x < thumb_pip.x
-    thumb_vertical_up = thumb_tip.y < thumb_pip.y
-    thumb_vertical_down = thumb_tip.y > thumb_pip.y + 0.02
+    thumb_vertical_up = thumb_tip.y < (thumb_pip.y - fold_margin)
+    thumb_vertical_down = thumb_tip.y > (thumb_pip.y + fold_margin)
+    thumb_vertical_span = abs(thumb_tip.y - thumb_mcp.y)
+    thumb_horizontal_span = abs(thumb_tip.x - thumb_mcp.x)
+    thumb_is_mostly_vertical = thumb_vertical_span > thumb_horizontal_span * THUMB_VERTICAL_RATIO
     # Para pulgar usamos señal combinada (lateral o vertical) para robustez.
     thumb_is_up_candidate = thumb_extended or thumb_vertical_up
     fingers_up.append(thumb_is_up_candidate)
 
     # Índice, medio, anular y meñique: punta más arriba (y menor) que su PIP.
     for tip_id, pip_id in zip(HAND_TIP_IDS[1:], HAND_PIP_IDS[1:]):
-        fingers_up.append(pts[tip_id].y < pts[pip_id].y)
+        fingers_up.append(pts[tip_id].y < (pts[pip_id].y - fold_margin))
 
     count_up = sum(fingers_up)
     index_up = fingers_up[1]
     middle_up = fingers_up[2]
     ring_up = fingers_up[3]
     pinky_up = fingers_up[4]
+    non_thumb_folded = not index_up and not middle_up and not ring_up and not pinky_up
 
     if count_up == 0:
         return "fist"
     if middle_up and not index_up and not ring_up and not pinky_up:
         return "middle_finger"
-    if (thumb_extended or thumb_vertical_down) and thumb_vertical_down and not index_up and not middle_up and not ring_up and not pinky_up:
+    if (
+        non_thumb_folded
+        and thumb_vertical_down
+        and (thumb_extended or thumb_is_mostly_vertical)
+        and thumb_is_mostly_vertical
+    ):
         return "thumb_down"
-    if thumb_vertical_up and not index_up and not middle_up and not ring_up and not pinky_up:
+    if (
+        non_thumb_folded
+        and thumb_vertical_up
+        and (thumb_extended or thumb_is_mostly_vertical)
+        and thumb_is_mostly_vertical
+    ):
         return "thumb_up"
     if count_up >= 4:
         return "open_palm"
